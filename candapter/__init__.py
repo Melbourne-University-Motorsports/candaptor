@@ -261,6 +261,26 @@ def format_frame(frame):
     return out
 
 
+def format_baudrate(baudrate):
+    """Format a CAN baudrate for display with kbps/Mbps units."""
+    if baudrate >= 1_000_000:
+        return f"{baudrate / 1_000_000:.0f} Mbps"
+    return f"{baudrate // 1000} kbps"
+
+
+def parse_baudrate(text):
+    """Parse a baudrate string (e.g. '500 kbps', '1 Mbps', or '500000') into an int."""
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if not digits:
+        raise ValueError(f"Invalid baudrate: {text!r}")
+    value = int(digits)
+    if "mbps" in text.lower() and value < 1000:
+        value *= 1_000_000
+    elif "kbps" in text.lower() and value < 1000:
+        value *= 1000
+    return value
+
+
 def parse_data_bytes(items):
     """Parse hex byte tokens from CLI arguments into bytes."""
     data = []

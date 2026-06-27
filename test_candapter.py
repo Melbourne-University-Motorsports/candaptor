@@ -5,7 +5,14 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from candapter import CANdapter, format_frame, parse_data_bytes
+from candapter import (
+    CANdapter,
+    CAN_BAUDRATE_CODES,
+    format_frame,
+    parse_data_bytes,
+    format_baudrate,
+    parse_baudrate,
+)
 
 
 def test_parse_standard_frame():
@@ -173,6 +180,39 @@ def test_baudrate_codes():
     assert CAN_BAUDRATE_CODES[500000] == "S6"
     assert CAN_BAUDRATE_CODES[800000] == "S7"
     assert CAN_BAUDRATE_CODES[1000000] == "S8"
+
+
+def test_format_baudrate_kbps():
+    """format_baudrate shows kbps for values under 1 Mbps."""
+    assert format_baudrate(10000) == "10 kbps"
+    assert format_baudrate(50000) == "50 kbps"
+    assert format_baudrate(125000) == "125 kbps"
+    assert format_baudrate(500000) == "500 kbps"
+    assert format_baudrate(800000) == "800 kbps"
+
+
+def test_format_baudrate_mbps():
+    """format_baudrate shows Mbps for 1 Mbps and above."""
+    assert format_baudrate(1000000) == "1 Mbps"
+
+
+def test_parse_baudrate_formatted():
+    """parse_baudrate converts kbps/Mbps strings back to ints."""
+    assert parse_baudrate("500 kbps") == 500000
+    assert parse_baudrate("1 Mbps") == 1000000
+    assert parse_baudrate("125 kbps") == 125000
+
+
+def test_parse_baudrate_plain():
+    """parse_baudrate also accepts plain integer strings."""
+    assert parse_baudrate("500000") == 500000
+    assert parse_baudrate("1000000") == 1000000
+
+
+def test_parse_baudrate_roundtrip():
+    """format_baudrate and parse_baudrate are inverses for all supported rates."""
+    for rate in CAN_BAUDRATE_CODES:
+        assert parse_baudrate(format_baudrate(rate)) == rate
 
 
 if __name__ == "__main__":

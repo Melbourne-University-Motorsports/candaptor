@@ -20,6 +20,8 @@ from candapter import (
     CANdapterError,
     CAN_BAUDRATE_CODES,
     parse_data_bytes,
+    format_baudrate,
+    parse_baudrate,
     ACK,
     ERROR,
 )
@@ -29,6 +31,7 @@ DEFAULT_CAN_BAUDRATE = 500000
 MAX_ROWS = 10000
 READ_TIMEOUT = 0.1
 POLL_INTERVAL_MS = 50
+NO_PORTS_MESSAGE = "No USB devices detected"
 
 
 class CandapterGUI:
@@ -44,7 +47,7 @@ class CandapterGUI:
         self.frame_count = 0
 
         self.port_var = tk.StringVar(value=default_port)
-        self.baud_var = tk.StringVar(value=str(DEFAULT_CAN_BAUDRATE))
+        self.baud_var = tk.StringVar(value=format_baudrate(DEFAULT_CAN_BAUDRATE))
         self.paused_var = tk.BooleanVar(value=False)
         self.auto_scroll_var = tk.BooleanVar(value=True)
         self.extended_var = tk.BooleanVar(value=False)
@@ -76,13 +79,19 @@ class CandapterGUI:
         bar.columnconfigure(1, weight=1)
 
         ttk.Label(bar, text="Port:").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        ports = self._list_ports()
+        if ports:
+            self.port_var.set(ports[0])
+        else:
+            self.port_var.set("")
+            ports = [NO_PORTS_MESSAGE]
         self.port_combo = ttk.Combobox(
-            bar, textvariable=self.port_var, values=self._list_ports()
+            bar, textvariable=self.port_var, values=ports
         )
         self.port_combo.grid(row=0, column=1, sticky="ew", padx=(0, 10))
 
         ttk.Label(bar, text="CAN Baud:").grid(row=0, column=2, sticky="w", padx=(0, 4))
-        baud_values = [str(b) for b in sorted(CAN_BAUDRATE_CODES.keys())]
+        baud_values = [format_baudrate(b) for b in sorted(CAN_BAUDRATE_CODES.keys())]
         self.baud_combo = ttk.Combobox(
             bar, textvariable=self.baud_var, values=baud_values, width=8,
             state="readonly",
@@ -206,7 +215,8 @@ class CandapterGUI:
                 ports = sorted(p.device for p in list_ports.comports())
             except Exception:
                 ports = []
-        if self.default_port not in ports:
+        if self.default_port in ports:
+            ports.remove(self.default_port)
             ports.insert(0, self.default_port)
         return ports
 
@@ -220,11 +230,11 @@ class CandapterGUI:
 
     def connect(self):
         port = self.port_var.get().strip()
-        if not port:
+        if not port or port == NO_PORTS_MESSAGE:
             self._set_status("Error: no port specified", "red")
             return
         try:
-            baudrate = int(self.baud_var.get())
+            baudrate = parse_baudrate(self.baud_var.get())
         except ValueError:
             self._set_status("Error: invalid baudrate", "red")
             return
@@ -262,7 +272,7 @@ class CandapterGUI:
         self.reader_thread.start()
         self.connected = True
         self._update_connect_button()
-        self._set_status(f"Connected — monitoring {port} @ {baudrate} Kbit/s", "green")
+        self._set_status(f"Connected — monitoring {port} @ {format_baudrate(baudrate)}", "green")
 
     def disconnect(self):
         if not self.connected and self.dev is None and self.reader_thread is None:
