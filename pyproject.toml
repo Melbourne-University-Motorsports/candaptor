@@ -26,6 +26,9 @@ dependencies = [
 dev = [
     "pytest>=7.0",
 ]
+bundle = [
+    "pyinstaller>=6.0",
+]
 
 [project.scripts]
 candapter = "candapter:main"

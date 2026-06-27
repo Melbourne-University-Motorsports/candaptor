@@ -1,0 +1,149 @@
+name: Build & Bundle
+
+# Builds the Python wheel + sdist and standalone GUI executables on every
+# push. Tag pushes (v*) additionally publish a GitHub Release with all
+# artifacts attached.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # required by `gh release create`
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev --frozen
+
+      - name: Run tests
+        run: uv run pytest -q
+
+  build-package:
+    name: Build wheel & sdist
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  bundle:
+    name: Bundle executable (${{ matrix.os }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows & Linux: single self-contained executable (no console).
+          - os: ubuntu-latest
+            artifact: candapter-gui-linux
+            pyi_args: "--onefile --windowed"
+            dist_name: candapter-gui
+          - os: windows-latest
+            artifact: candapter-gui-windows
+            pyi_args: "--onefile --windowed"
+            dist_name: candapter-gui.exe
+          # macOS: onedir .app bundle (--onefile + --windowed is deprecated
+          # and clashes with macOS code-signing/security).
+          - os: macos-latest
+            artifact: candapter-gui-macos
+            pyi_args: "--windowed"
+            dist_name: candapter-gui.app
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra bundle --frozen
+
+      - name: Build standalone executable
+        run: >
+          uv run pyinstaller
+          ${{ matrix.pyi_args }}
+          --name candapter-gui
+          --collect-submodules candapter
+          --noconfirm --clean
+          candapter/gui.py
+
+      - name: Archive bundle (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: tar -czf ${{ matrix.artifact }}.tar.gz -C dist ${{ matrix.dist_name }}
+
+      - name: Archive bundle (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/${{ matrix.dist_name }} -DestinationPath ${{ matrix.artifact }}.zip
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-package, bundle]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+
+      - name: Stage release assets
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          find assets -type f -exec cp {} release-assets/ \;
+          ls -la release-assets
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            release-assets/*

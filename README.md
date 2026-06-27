@@ -46,3 +46,42 @@ Supported CAN baudrates: `10000`, `20000`, `50000`, `100000`, `125000`,
 ```bash
 uv run pytest
 ```
+
+## Builds & releases
+
+GitHub Actions (`.github/workflows/build.yml`) runs on every push and pull
+request:
+
+- **Tests** — `uv run pytest`.
+- **Wheel & sdist** — `uv build` produces the installable
+  `candapter-*.whl` / `candapter-*.tar.gz` (gives you the `candapter` and
+  `candapter-gui` console scripts via `pip install`).
+- **Standalone GUI executables** — PyInstaller bundles `candapter-gui` into a
+  self-contained app for Windows, macOS, and Linux, so it runs without a
+  Python install.
+
+Pushing a tag (`v*`, e.g. `git tag v0.2.0 && git push --tags`) creates a
+GitHub Release with all artifacts attached.
+
+### Downloading artifacts
+
+- **From a release**: grab the assets on the release page (e.g.
+  `candapter-gui-windows.zip`, `candapter-gui-macos.tar.gz`,
+  `candapter-gui-linux.tar.gz`).
+- **From any commit**: download the workflow run's artifacts from the Actions
+  tab (kept for 90 days).
+
+### Running the bundled app
+
+```bash
+# Linux
+chmod +x candapter-gui
+./candapter-gui
+
+# macOS (the .app is unsigned — first run may need Gatekeeper approval)
+open candapter-gui.app
+# or, if blocked:  xattr -dr com.apple.quarantine candapter-gui.app
+```
+
+Windows: unzip and double-click `candapter-gui.exe`. SmartScreen may warn
+because the executable is unsigned — choose **More info → Run anyway**.
