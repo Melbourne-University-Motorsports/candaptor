@@ -141,10 +141,10 @@ jobs:
             echo "prerelease="                     >> "$GITHUB_OUTPUT"
             echo "notes=--generate-notes"          >> "$GITHUB_OUTPUT"
           else
-            # Branch push (main): rolling "latest" pre-release, always updated.
+            # Branch push (main): rolling "latest" release, always updated.
             echo "tag=latest"                       >> "$GITHUB_OUTPUT"
             echo "title=Latest (main)"              >> "$GITHUB_OUTPUT"
-            echo "prerelease=--prerelease"          >> "$GITHUB_OUTPUT"
+            echo "prerelease="                     >> "$GITHUB_OUTPUT"
             echo "notes=--generate-notes"          >> "$GITHUB_OUTPUT"
           fi
 
