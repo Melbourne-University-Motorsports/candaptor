@@ -1,8 +1,9 @@
 name: Build & Bundle
 
 # Builds the Python wheel + sdist and standalone GUI executables on every
-# push. Tag pushes (v*) additionally publish a GitHub Release with all
-# artifacts attached.
+# push. Every push to main (and tag pushes v*) publishes a GitHub Release
+# with all artifacts attached — main pushes update a rolling "latest"
+# pre-release; tag pushes create a proper versioned release.
 on:
   push:
     branches: [main]
@@ -121,11 +122,31 @@ jobs:
 
   release:
     name: Publish release
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Skip for PRs; publish on every push to main (rolling "latest") and
+    # every tag push (versioned release).
+    if: github.event_name != 'pull_request'
     needs: [build-package, bundle]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Configure release
+        id: rel
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            # Tag push: proper versioned release.
+            echo "tag=${GITHUB_REF_NAME}"          >> "$GITHUB_OUTPUT"
+            echo "title=${GITHUB_REF_NAME}"         >> "$GITHUB_OUTPUT"
+            echo "prerelease="                     >> "$GITHUB_OUTPUT"
+            echo "notes=--generate-notes"          >> "$GITHUB_OUTPUT"
+          else
+            # Branch push (main): rolling "latest" pre-release, always updated.
+            echo "tag=latest"                       >> "$GITHUB_OUTPUT"
+            echo "title=Latest (main)"              >> "$GITHUB_OUTPUT"
+            echo "prerelease=--prerelease"          >> "$GITHUB_OUTPUT"
+            echo "notes=--generate-notes"          >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -139,11 +160,16 @@ jobs:
           find assets -type f -exec cp {} release-assets/ \;
           ls -la release-assets
 
-      - name: Create GitHub release
+      - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" \
-            --generate-notes \
+          # Delete any existing release for this tag so gh release create
+          # succeeds even when the tag already exists (rolling "latest").
+          gh release delete "${{ steps.rel.outputs.tag }}" --yes --cleanup-tag 2>/dev/null || true
+
+          gh release create "${{ steps.rel.outputs.tag }}" \
+            --title "${{ steps.rel.outputs.title }}" \
+            ${{ steps.rel.outputs.prerelease }} \
+            ${{ steps.rel.outputs.notes }} \
             release-assets/*

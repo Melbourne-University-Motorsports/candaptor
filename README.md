@@ -60,8 +60,10 @@ request:
   self-contained app for Windows, macOS, and Linux, so it runs without a
   Python install.
 
-Pushing a tag (`v*`, e.g. `git tag v0.2.0 && git push --tags`) creates a
-GitHub Release with all artifacts attached.
+Every push to `main` publishes a rolling **"Latest" pre-release** with all
+build artifacts attached (always points to the newest commit). Pushing a
+version tag (`v*`, e.g. `git tag v0.2.0 && git push --tags`) creates a proper
+versioned GitHub Release instead.
 
 ### Downloading artifacts
 
