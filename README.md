@@ -1,13 +1,12 @@
-# CANdapter
+# CANdaptor
 
-Python driver and GUI for the CANdapter USB-to-CAN adapter
+Python driver and GUI for the CANdaptor USB-to-CAN adapter
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.9+
 - [`uv`](https://docs.astral.sh/uv/)
-- tkinter (bundled with Python on macOS/Windows; Linux: `sudo apt install python3-tk`)
-- A CANdapter USB-to-CAN adapter
+- A CANdaptor USB-to-CAN adapter
 
 ## Setup
 
@@ -18,7 +17,7 @@ uv sync --extra dev
 ## Start the GUI
 
 ```bash
-uv run candapter-gui
+uv run candaptor-gui
 ```
 
 `--port` is optional. The window opens with a default port pre-filled — pick the
@@ -27,15 +26,15 @@ even have hardware plugged in) to launch the GUI.
 
 ```bash
 # override the default port:
-uv run candapter-gui --port /dev/ttyUSB0
+uv run candaptor-gui --port /dev/ttyUSB0
 ```
 
 ## CLI
 
 ```bash
-uv run candapter monitor --port /dev/ttyUSB0
-uv run candapter send --port /dev/ttyUSB0 3CF 11 22 33 44
-uv run candapter version --port /dev/ttyUSB0
+uv run candaptor monitor --port /dev/ttyUSB0
+uv run candaptor send --port /dev/ttyUSB0 3CF 11 22 33 44
+uv run candaptor version --port /dev/ttyUSB0
 ```
 
 Supported CAN baudrates: `10000`, `20000`, `50000`, `100000`, `125000`,
@@ -54,9 +53,9 @@ request:
 
 - **Tests** — `uv run pytest`.
 - **Wheel & sdist** — `uv build` produces the installable
-  `candapter-*.whl` / `candapter-*.tar.gz` (gives you the `candapter` and
-  `candapter-gui` console scripts via `pip install`).
-- **Standalone GUI executables** — PyInstaller bundles `candapter-gui` into a
+  `candaptor-*.whl` / `candaptor-*.tar.gz` (gives you the `candaptor` and
+  `candaptor-gui` console scripts via `pip install`).
+- **Standalone GUI executables** — PyInstaller bundles `candaptor-gui` into a
   self-contained app for Windows, macOS, and Linux, so it runs without a
   Python install.
 
@@ -68,8 +67,8 @@ versioned GitHub Release instead.
 ### Downloading artifacts
 
 - **From a release**: grab the assets on the release page (e.g.
-  `candapter-gui-windows.zip`, `candapter-gui-macos.tar.gz`,
-  `candapter-gui-linux.tar.gz`).
+  `candaptor-gui-windows.zip`, `candaptor-gui-macos.tar.gz`,
+  `candaptor-gui-linux.tar.gz`).
 - **From any commit**: download the workflow run's artifacts from the Actions
   tab (kept for 90 days).
 
@@ -77,13 +76,13 @@ versioned GitHub Release instead.
 
 ```bash
 # Linux
-chmod +x candapter-gui
-./candapter-gui
+chmod +x candaptor-gui
+./candaptor-gui
 
 # macOS (the .app is unsigned — first run may need Gatekeeper approval)
-open candapter-gui.app
-# or, if blocked:  xattr -dr com.apple.quarantine candapter-gui.app
+open candaptor-gui.app
+# or, if blocked:  xattr -dr com.apple.quarantine candaptor-gui.app
 ```
 
-Windows: unzip and double-click `candapter-gui.exe`. SmartScreen may warn
+Windows: unzip and double-click `candaptor-gui.exe`. SmartScreen may warn
 because the executable is unsigned — choose **More info → Run anyway**.

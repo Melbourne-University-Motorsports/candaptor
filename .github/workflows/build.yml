@@ -68,19 +68,19 @@ jobs:
         include:
           # Windows & Linux: single self-contained executable (no console).
           - os: ubuntu-latest
-            artifact: candapter-gui-linux
+            artifact: candaptor-gui-linux
             pyi_args: "--onefile --windowed"
-            dist_name: candapter-gui
+            dist_name: candaptor-gui
           - os: windows-latest
-            artifact: candapter-gui-windows
+            artifact: candaptor-gui-windows
             pyi_args: "--onefile --windowed"
-            dist_name: candapter-gui.exe
+            dist_name: candaptor-gui.exe
           # macOS: onedir .app bundle (--onefile + --windowed is deprecated
           # and clashes with macOS code-signing/security).
           - os: macos-latest
-            artifact: candapter-gui-macos
+            artifact: candaptor-gui-macos
             pyi_args: "--windowed"
-            dist_name: candapter-gui.app
+            dist_name: candaptor-gui.app
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -98,10 +98,13 @@ jobs:
         run: >
           uv run pyinstaller
           ${{ matrix.pyi_args }}
-          --name candapter-gui
-          --collect-submodules candapter
+          --name candaptor-gui
+          --collect-submodules candaptor
+          --hidden-import PySide6.QtCore
+          --hidden-import PySide6.QtGui
+          --hidden-import PySide6.QtWidgets
           --noconfirm --clean
-          candapter/gui.py
+          candaptor/gui.py
 
       - name: Archive bundle (unix)
         if: runner.os != 'Windows'

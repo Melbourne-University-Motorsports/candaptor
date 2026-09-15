@@ -40,7 +40,7 @@ htmlcov/
 Thumbs.db
 
 # uv / setuptools local artifacts
-candapter.egg-info/
+candaptor.egg-info/
 
 # PyInstaller
 *.spec

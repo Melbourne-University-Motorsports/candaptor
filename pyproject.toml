@@ -3,12 +3,12 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "candapter"
+name = "candaptor"
 version = "0.1.0"
-description = "Python driver and GUI for the CANdapter USB-to-CAN adapter"
+description = "Python driver and GUI for the CANdaptor USB-to-CAN adapter"
 readme = "README.md"
-requires-python = ">=3.8"
-keywords = ["can", "can-bus", "serial", "candapter", "automotive"]
+requires-python = ">=3.9"
+keywords = ["can", "can-bus", "serial", "candaptor", "automotive"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -20,6 +20,7 @@ classifiers = [
 ]
 dependencies = [
     "pyserial>=3.0",
+    "pyside6-essentials>=6.6",
 ]
 
 [project.optional-dependencies]
@@ -31,8 +32,8 @@ bundle = [
 ]
 
 [project.scripts]
-candapter = "candapter:main"
-candapter-gui = "candapter.gui:main"
+candaptor = "candaptor:main"
+candaptor-gui = "candaptor.gui:main"
 
 [tool.setuptools]
-packages = ["candapter"]
+packages = ["candaptor"]

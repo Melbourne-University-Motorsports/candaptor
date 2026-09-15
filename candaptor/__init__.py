@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""CANdapter USB-to-CAN driver.
+"""CANdaptor USB-to-CAN driver.
 
-A thin pyserial wrapper implementing the CANdapter's ASCII serial protocol
+A thin pyserial wrapper implementing the CANdaptor's ASCII serial protocol
 for transmitting and receiving CAN frames.
 """
 
@@ -36,12 +36,12 @@ CAN_BAUDRATE_CODES = {
 }
 
 
-class CANdapterError(Exception):
+class CANdaptorError(Exception):
     pass
 
 
-class CANdapter:
-    """Driver for the CANdapter USB-to-CAN adapter."""
+class CANdaptor:
+    """Driver for the CANdaptor USB-to-CAN adapter."""
 
     def __init__(self, port=DEFAULT_PORT, baudrate=DEFAULT_SERIAL_BAUDRATE):
         self.port = port
@@ -83,9 +83,9 @@ class CANdapter:
             self.ser.flush()
             resp = self.ser.read(1)
         if resp == ERROR:
-            raise CANdapterError(f"CANdapter ERROR for command {cmd!r}")
+            raise CANdaptorError(f"CANdaptor ERROR for command {cmd!r}")
         if resp != ACK:
-            raise CANdapterError(f"Unexpected response {resp!r} for command {cmd!r}")
+            raise CANdaptorError(f"Unexpected response {resp!r} for command {cmd!r}")
         return True
 
     def set_baudrate(self, baudrate=DEFAULT_CAN_BAUDRATE):
@@ -95,7 +95,7 @@ class CANdapter:
         else:
             code = CAN_BAUDRATE_CODES.get(baudrate)
             if code is None:
-                raise CANdapterError(f"Unsupported CAN baudrate: {baudrate}")
+                raise CANdaptorError(f"Unsupported CAN baudrate: {baudrate}")
         return self._send(code)
 
     def set_timestamp(self, on=False):
@@ -122,14 +122,14 @@ class CANdapter:
         """
         data = bytes(data)
         if len(data) > 8:
-            raise CANdapterError("CAN frame data exceeds 8 bytes")
+            raise CANdaptorError("CAN frame data exceeds 8 bytes")
         if extended:
             if not 0 <= frame_id <= 0x1FFFFFFF:
-                raise CANdapterError("Extended CAN ID out of range")
+                raise CANdaptorError("Extended CAN ID out of range")
             cmd = "X" + f"{frame_id:08X}" + f"{len(data):X}"
         else:
             if not 0 <= frame_id <= 0x7FF:
-                raise CANdapterError("Standard CAN ID out of range")
+                raise CANdaptorError("Standard CAN ID out of range")
             cmd = "T" + f"{frame_id:03X}" + f"{len(data):X}"
         cmd += data.hex().upper()
         return self._send(cmd)
@@ -151,7 +151,7 @@ class CANdapter:
 
         Returns a dict {id, data, extended} or None on parse failure.
         If timestamp is True, also extracts the 4-hex-digit millisecond
-        counter appended by the CANdapter into 'timestamp'.
+        counter appended by the CANdaptor into 'timestamp'.
         """
         if isinstance(line, (bytes, bytearray)):
             line = line.decode("ascii", errors="replace")
@@ -205,7 +205,7 @@ class CANdapter:
 
         on_frame -- optional callback(frame_dict) called for each frame.
         baudrate -- CAN bus bitrate (default: %(default)s).
-        timestamp -- enable CANdapter timestamps on received frames.
+        timestamp -- enable CANdaptor timestamps on received frames.
         """
         self.set_baudrate(baudrate)
         if timestamp:
@@ -291,7 +291,7 @@ def parse_data_bytes(items):
 
 
 def cmd_version(args):
-    dev = CANdapter(port=args.port)
+    dev = CANdaptor(port=args.port)
     try:
         print(dev.version())
     finally:
@@ -299,14 +299,14 @@ def cmd_version(args):
 
 
 def cmd_monitor(args):
-    dev = CANdapter(port=args.port)
+    dev = CANdaptor(port=args.port)
     dev.monitor(baudrate=args.can_baudrate, timestamp=args.timestamp)
 
 
 def cmd_send(args):
     frame_id = int(args.id, 16)
     data = parse_data_bytes(args.data)
-    dev = CANdapter(port=args.port)
+    dev = CANdaptor(port=args.port)
     try:
         dev.set_baudrate(args.can_baudrate)
         dev.open()
@@ -322,8 +322,8 @@ def cmd_send(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="candapter",
-        description="CANdapter USB-to-CAN driver (CANdapter serial protocol)",
+        prog="candaptor",
+        description="CANdaptor USB-to-CAN driver (CANdaptor serial protocol)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
