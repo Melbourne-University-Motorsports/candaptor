@@ -14,7 +14,17 @@ Python driver and GUI for the CANdaptor USB-to-CAN adapter
 uv sync --extra dev
 ```
 
-## Start the GUI
+## Quick Start (No Python Setup Required)
+
+Just like `inverter-monitor`, launcher scripts are provided in the repo root so you can launch the GUI immediately without manual setup (they install `uv` automatically if missing):
+
+- **macOS**: Double-click `run.command` in Finder (or `./run.sh`).
+- **Linux**: `./run.sh`
+- **Windows**: Double-click `run.cmd`
+
+---
+
+## Start the GUI manually
 
 ```bash
 uv run candaptor-gui
