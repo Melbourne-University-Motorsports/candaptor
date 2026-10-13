@@ -111,7 +111,8 @@ jobs:
           ${{ matrix.pyi_args }}
           --name candaptor-gui
           --collect-submodules candaptor
-          --collect-all pyqtgraph
+          --collect-submodules pyqtgraph
+          --exclude-module pyqtgraph.examples
           --collect-all cantools
           --hidden-import PySide6.QtCore
           --hidden-import PySide6.QtGui
