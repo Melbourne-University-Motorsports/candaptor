@@ -229,7 +229,7 @@ def test_id_tracker_new_id_has_no_period():
     stats = tracker.update(_frame(), now=1.0)
     assert stats.count == 1
     assert stats.period_ms is None
-    assert stats.hz is None
+    assert stats.hz() is None
     assert stats.data == b"\x11\x22"
     assert len(tracker) == 1
 
@@ -243,7 +243,7 @@ def test_id_tracker_updates_bytes_and_period():
     assert stats.count == 2
     assert stats.data == b"\x11\x33"
     assert abs(stats.period_ms - 10.0) < 0.01
-    assert abs(stats.hz - 100.0) < 0.1
+    assert abs(stats.hz() - 100.0) < 0.1
     assert stats.changed == (False, True)
     assert format_change_mask(tracker.display_changed(stats, 1.01), stats.dlc) == ".*"
     assert tracker.display_changed(stats, 1.01 + IdTracker.CHANGE_HOLD_S) == ()
@@ -336,6 +336,37 @@ def test_id_tracker_jitter_raises_std():
     assert stats.std_period_ms > 3.0
 
 
+def test_id_tracker_hz_is_rolling_window():
+    from candaptor.id_stats import IdTracker
+
+    tracker = IdTracker()
+    t = 1.0
+    tracker.update(_frame(), now=t)
+    for _ in range(10):
+        t += 0.010
+        stats = tracker.update(_frame(), now=t)
+    assert abs(stats.hz(t) - 100.0) < 1.0
+
+    # A quiet stretch slides old arrivals out of the 1 s window.
+    assert stats.hz(t + 0.5) < 25.0
+    assert stats.hz(t + IdTracker.HZ_WINDOW_S + 0.05) is None
+
+
+def test_id_tracker_hz_averages_jitter():
+    from candaptor.id_stats import IdTracker
+
+    tracker = IdTracker()
+    t = 1.0
+    tracker.update(_frame(), now=t)
+    for dt in (0.010, 0.020, 0.010, 0.020, 0.010, 0.020, 0.010, 0.020):
+        t += dt
+        stats = tracker.update(_frame(), now=t)
+    # Eight intervals summing to 120 ms → 8 / 0.12 ≈ 66.7 Hz, not 50 or 100.
+    assert abs(stats.hz(t) - (8 / 0.12)) < 0.1
+    assert abs(stats.rolling_period_ms(t) - 15.0) < 0.1
+    assert abs(stats.period_ms - 20.0) < 0.01
+
+
 def test_can_frame_bits_and_bus_load():
     from candaptor.id_stats import BusLoadMeter, can_frame_bits
 
@@ -391,6 +422,80 @@ def test_format_id_row_colours_changed_bytes():
     from candaptor.id_stats import pad_column
     assert len(pad_column("age", "123")) == 7
     assert pad_column("age", "123").endswith("123")
+
+
+def test_port_combo_state_selects_first_when_empty():
+    from candaptor.gui import NO_PORTS_MESSAGE, port_combo_state
+
+    items, selected = port_combo_state(["/dev/cu.usbserial-A", "/dev/cu.usbserial-B"], "")
+    assert items == ["/dev/cu.usbserial-A", "/dev/cu.usbserial-B"]
+    assert selected == "/dev/cu.usbserial-A"
+
+
+def test_port_combo_state_keeps_current_even_if_missing():
+    from candaptor.gui import NO_PORTS_MESSAGE, port_combo_state
+
+    items, selected = port_combo_state(
+        ["/dev/cu.usbserial-B"], " /dev/cu.usbserial-A "
+    )
+    assert items == ["/dev/cu.usbserial-B"]
+    assert selected == "/dev/cu.usbserial-A"
+
+    items, selected = port_combo_state([], NO_PORTS_MESSAGE)
+    assert items == [NO_PORTS_MESSAGE]
+    assert selected == ""
+
+    items, selected = port_combo_state([], "/dev/cu.usbserial-A")
+    assert items == [NO_PORTS_MESSAGE]
+    assert selected == "/dev/cu.usbserial-A"
+
+
+def test_trace_log_grows_then_overwrites_oldest():
+    from candaptor.gui import TraceLog
+
+    log = TraceLog(max_rows=3)
+    assert log.append(("1",)) is True
+    assert log.append(("2",)) is True
+    assert log.append(("3",)) is True
+    assert [log[i][0] for i in range(len(log))] == ["1", "2", "3"]
+    assert log.append(("4",)) is False
+    assert [log[i][0] for i in range(len(log))] == ["2", "3", "4"]
+    log.append(("5",))
+    assert [log[i][0] for i in range(3)] == ["3", "4", "5"]
+    assert log[-1][0] == "5"
+    log.clear()
+    assert len(log) == 0
+
+
+def test_enqueue_latest_drops_oldest_when_full():
+    import queue as queue_mod
+    from candaptor.gui import enqueue_latest
+
+    q = queue_mod.Queue(maxsize=2)
+    enqueue_latest(q, "a")
+    enqueue_latest(q, "b")
+    enqueue_latest(q, "c")
+    assert q.get_nowait() == "b"
+    assert q.get_nowait() == "c"
+
+
+def test_trace_model_wraps_without_growing_past_max():
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from candaptor.gui import TraceModel
+
+    app = QApplication.instance() or QApplication([])
+    model = TraceModel(max_rows=3)
+    rows = [(str(i), "t", "", "Std", "001", "0", "") for i in range(1, 6)]
+    model.extend(rows[:2])
+    assert model.rowCount() == 2
+    assert model.cell_text(0, 0) == "1"
+    model.extend(rows[2:])
+    assert model.rowCount() == 3
+    assert [model.cell_text(i, 0) for i in range(3)] == ["3", "4", "5"]
+    model.clear()
+    assert model.rowCount() == 0
 
 
 if __name__ == "__main__":

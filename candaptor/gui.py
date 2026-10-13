@@ -19,9 +19,10 @@ import sys
 import threading
 import time
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer
 from PySide6.QtGui import QAction, QBrush, QColor, QFont, QFontDatabase, QGuiApplication, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -38,6 +39,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
+    QTableView,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -67,13 +69,169 @@ from candaptor.id_stats import (
     format_wall_time,
     frame_key,
 )
+from candaptor.signals_panel import SignalsPanel
 
 DEFAULT_PORT = "/dev/cu.usbserial-DN2RIILM"
 DEFAULT_CAN_BAUDRATE = 500000
 MAX_ROWS = 10000
+MAX_QUEUED_FRAMES = 4000
+POLL_DRAIN_LIMIT = 2000
 READ_TIMEOUT = 0.1
+READER_IDLE_S = 0.01
 POLL_INTERVAL_MS = 50
 NO_PORTS_MESSAGE = "No USB devices detected"
+
+
+def port_combo_state(ports, current, placeholder=NO_PORTS_MESSAGE):
+    """Items and selected text for the Port combo after a scan.
+
+    Keeps a user-picked (or typed) port even if it is not in ``ports``.
+    Otherwise selects the first discovered port, or the placeholder when
+    the scan is empty.
+    """
+    current = (current or "").strip()
+    if current == placeholder:
+        current = ""
+    if ports:
+        return list(ports), current or ports[0]
+    return [placeholder], current
+
+
+def enqueue_latest(q, item):
+    """Put ``item`` on ``q``, dropping the oldest queued item if full."""
+    try:
+        q.put_nowait(item)
+        return
+    except queue.Full:
+        pass
+    try:
+        q.get_nowait()
+    except queue.Empty:
+        pass
+    try:
+        q.put_nowait(item)
+    except queue.Full:
+        pass
+
+
+class TraceLog:
+    """Fixed-capacity chronological frame log.
+
+    Grows until ``max_rows``, then overwrites the oldest entry so appends
+    stay O(1). Index 0 is always the oldest surviving frame.
+    """
+
+    def __init__(self, max_rows=MAX_ROWS):
+        if max_rows < 1:
+            raise ValueError("max_rows must be >= 1")
+        self.max_rows = max_rows
+        self._rows = []
+        self._head = 0
+
+    def __len__(self):
+        return len(self._rows)
+
+    def __getitem__(self, row):
+        n = len(self._rows)
+        if row < 0:
+            row += n
+        if row < 0 or row >= n:
+            raise IndexError(row)
+        if n < self.max_rows:
+            return self._rows[row]
+        return self._rows[(self._head + row) % self.max_rows]
+
+    def append(self, values):
+        """Append one row. Returns True if the log grew, False if it wrapped."""
+        if len(self._rows) < self.max_rows:
+            self._rows.append(values)
+            return True
+        self._rows[self._head] = values
+        self._head = (self._head + 1) % self.max_rows
+        return False
+
+    def clear(self):
+        self._rows = []
+        self._head = 0
+
+
+class TraceModel(QAbstractTableModel):
+    """Qt model over :class:`TraceLog` — paints visible rows only."""
+
+    HEADERS = ("#", "Time", "TS", "Type", "ID", "DLC", "Data")
+    ALIGNS = (
+        Qt.AlignmentFlag.AlignRight,
+        Qt.AlignmentFlag.AlignLeft,
+        Qt.AlignmentFlag.AlignRight,
+        Qt.AlignmentFlag.AlignHCenter,
+        Qt.AlignmentFlag.AlignLeft,
+        Qt.AlignmentFlag.AlignHCenter,
+        Qt.AlignmentFlag.AlignLeft,
+    )
+
+    def __init__(self, parent=None, max_rows=MAX_ROWS):
+        super().__init__(parent)
+        self._log = TraceLog(max_rows)
+
+    def rowCount(self, parent=QModelIndex()):
+        if parent.isValid():
+            return 0
+        return len(self._log)
+
+    def columnCount(self, parent=QModelIndex()):
+        if parent.isValid():
+            return 0
+        return len(self.HEADERS)
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+        if orientation == Qt.Orientation.Horizontal:
+            return self.HEADERS[section]
+        return None
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+        if role == Qt.ItemDataRole.DisplayRole:
+            return self._log[index.row()][index.column()]
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            return int(self.ALIGNS[index.column()] | Qt.AlignmentFlag.AlignVCenter)
+        return None
+
+    def cell_text(self, row, col):
+        if row < 0 or row >= len(self._log):
+            return ""
+        return self._log[row][col]
+
+    def extend(self, rows):
+        rows = list(rows)
+        if not rows:
+            return
+        space = self._log.max_rows - len(self._log)
+        growing = rows[:space]
+        wrapping = rows[space:]
+        if growing:
+            start = len(self._log)
+            self.beginInsertRows(QModelIndex(), start, start + len(growing) - 1)
+            for values in growing:
+                self._log.append(values)
+            self.endInsertRows()
+        if wrapping:
+            for values in wrapping:
+                self._log.append(values)
+            last = len(self._log) - 1
+            self.dataChanged.emit(
+                self.index(0, 0),
+                self.index(last, len(self.HEADERS) - 1),
+                [Qt.ItemDataRole.DisplayRole],
+            )
+
+    def clear(self):
+        self.beginResetModel()
+        self._log.clear()
+        self.endResetModel()
+
 
 DATA_ROLE = Qt.ItemDataRole.UserRole
 CHANGED_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -181,8 +339,9 @@ class CandaptorWindow(QMainWindow):
         self.dev = None
         self.reader_thread = None
         self.stop_event = threading.Event()
-        self.frame_queue = queue.Queue()
+        self.frame_queue = queue.Queue(maxsize=MAX_QUEUED_FRAMES)
         self.error_queue = queue.Queue()
+        self.trace_model = TraceModel(self)
         self.connected = False
         self.frame_count = 0
         self.id_tracker = IdTracker()
@@ -193,6 +352,7 @@ class CandaptorWindow(QMainWindow):
         self._id_visual = {}
         self._id_style_row = -1
         self._mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        self.signals_panel = SignalsPanel(self)
 
         self.setWindowTitle("CANdaptor")
         self.resize(1120, 640)
@@ -224,14 +384,13 @@ class CandaptorWindow(QMainWindow):
         self.port_combo = QComboBox()
         self.port_combo.setEditable(True)
         self.port_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        ports = self._list_ports()
-        if ports:
-            self.port_combo.addItems(ports)
-            self.port_combo.setCurrentText(ports[0])
-        else:
-            self.port_combo.addItem(NO_PORTS_MESSAGE)
-            self.port_combo.setCurrentText("")
+        self._populate_ports()
         bar.addWidget(self.port_combo, 1)
+
+        self.refresh_ports_btn = QPushButton("Refresh")
+        self.refresh_ports_btn.setToolTip("Rescan USB serial ports")
+        self.refresh_ports_btn.clicked.connect(self._refresh_ports)
+        bar.addWidget(self.refresh_ports_btn)
 
         bar.addWidget(QLabel("CAN Baud:"))
         self.baud_combo = QComboBox()
@@ -295,17 +454,19 @@ class CandaptorWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.addTab(self._build_trace_table(), "Trace")
         tabs.addTab(self._build_id_table(), "IDs")
+        tabs.addTab(self.signals_panel, "Signals")
         layout.addWidget(tabs, 1)
         return panel
 
     def _configure_table(self, table):
         table.setFont(self._mono)
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         table.setAlternatingRowColors(True)
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(22)
+        table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         table.setShowGrid(False)
         table.setWordWrap(False)
         table.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -315,28 +476,16 @@ class CandaptorWindow(QMainWindow):
         copy.activated.connect(lambda: self._copy_current_cell(table))
 
     def _build_trace_table(self):
-        self.trace_table = QTableWidget(0, 7)
+        self.trace_table = QTableView()
+        self.trace_table.setModel(self.trace_model)
         self._configure_table(self.trace_table)
-        self.trace_table.setHorizontalHeaderLabels(
-            ["#", "Time", "TS", "Type", "ID", "DLC", "Data"]
-        )
         header = self.trace_table.horizontalHeader()
         widths = (50, 95, 55, 50, 90, 40, 300)
-        aligns = (
-            Qt.AlignmentFlag.AlignRight,
-            Qt.AlignmentFlag.AlignLeft,
-            Qt.AlignmentFlag.AlignRight,
-            Qt.AlignmentFlag.AlignHCenter,
-            Qt.AlignmentFlag.AlignLeft,
-            Qt.AlignmentFlag.AlignHCenter,
-            Qt.AlignmentFlag.AlignLeft,
-        )
-        self._trace_aligns = aligns
         for i, width in enumerate(widths):
             self.trace_table.setColumnWidth(i, width)
         header.setStretchLastSection(True)
         header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
-        self.trace_table.cellDoubleClicked.connect(self._fill_send_from_trace)
+        self.trace_table.doubleClicked.connect(self._on_trace_double_clicked)
         self.trace_table.customContextMenuRequested.connect(self._trace_context_menu)
         return self.trace_table
 
@@ -408,6 +557,18 @@ class CandaptorWindow(QMainWindow):
             ports.insert(0, self.default_port)
         return ports
 
+    def _populate_ports(self, keep_current=False):
+        current = self.port_combo.currentText() if keep_current else ""
+        items, selected = port_combo_state(self._list_ports(), current)
+        self.port_combo.blockSignals(True)
+        self.port_combo.clear()
+        self.port_combo.addItems(items)
+        self.port_combo.setCurrentText(selected)
+        self.port_combo.blockSignals(False)
+
+    def _refresh_ports(self):
+        self._populate_ports(keep_current=True)
+
     # ---- Connection management ------------------------------------------
 
     def toggle_connect(self):
@@ -454,7 +615,7 @@ class CandaptorWindow(QMainWindow):
         self.can_bitrate = baudrate
         self.bus_load.clear()
         self.stop_event.clear()
-        self.frame_queue = queue.Queue()
+        self.frame_queue = queue.Queue(maxsize=MAX_QUEUED_FRAMES)
         self.error_queue = queue.Queue()
         self.reader_thread = threading.Thread(
             target=self._reader_loop, daemon=True, name="can-reader"
@@ -499,38 +660,70 @@ class CandaptorWindow(QMainWindow):
         buffer = b""
         while not self.stop_event.is_set():
             try:
-                with self.dev._lock:
-                    chunk = self.dev.ser.read(64)
+                dev = self.dev
+                if dev is None:
+                    return
+                with dev._lock:
+                    waiting = dev.ser.in_waiting
+                    if waiting:
+                        chunk = dev.ser.read(waiting)
+                    else:
+                        timeout = dev.ser.timeout
+                        dev.ser.timeout = READER_IDLE_S
+                        try:
+                            chunk = dev.ser.read(1)
+                        finally:
+                            dev.ser.timeout = timeout
             except Exception as e:
                 self.error_queue.put(e)
                 self.stop_event.set()
                 return
-            if chunk:
-                chunk = chunk.replace(ACK, b"").replace(ERROR, b"")
-                buffer += chunk
-                while b"\r" in buffer:
-                    line, buffer = buffer.split(b"\r", 1)
-                    if line:
-                        frame = CANdaptor._parse_frame(
-                            line, timestamp=self.dev.timestamp_enabled
-                        )
-                        if frame:
-                            self.frame_queue.put(frame)
+            if not chunk:
+                continue
+            chunk = chunk.replace(ACK, b"").replace(ERROR, b"")
+            buffer += chunk
+            if len(buffer) > 8192:
+                buffer = buffer[-256:]
+            while b"\r" in buffer:
+                line, buffer = buffer.split(b"\r", 1)
+                if line:
+                    frame = CANdaptor._parse_frame(
+                        line, timestamp=dev.timestamp_enabled
+                    )
+                    if frame:
+                        self._enqueue_frame(frame)
+
+    def _enqueue_frame(self, frame):
+        """Push a frame, dropping the oldest if the GUI is behind."""
+        enqueue_latest(self.frame_queue, frame)
 
     # ---- GUI queue polling ----------------------------------------------
 
     def _poll_queues(self):
+        paused = self.pause_check.isChecked()
+        trace_rows = []
+        drained_frames = []
+        dirty = {}
+        now = time.time()
         drained = 0
-        while True:
+        while drained < POLL_DRAIN_LIMIT:
             try:
                 frame = self.frame_queue.get_nowait()
             except queue.Empty:
                 break
-            if not self.pause_check.isChecked():
-                self._add_frame_row(frame)
             drained += 1
-            if drained > 500:
-                break
+            if paused:
+                continue
+            now = time.time()
+            drained_frames.append(frame)
+            trace_rows.append(self._trace_row_values(frame, now))
+            stats = self.id_tracker.update(frame, now)
+            dirty[self._id_iid(stats)] = stats
+            self.bus_load.add_frame(frame, now)
+
+        if drained_frames:
+            self.signals_panel.process_frames(drained_frames, now)
+        self.signals_panel.update_views()
 
         try:
             err = self.error_queue.get_nowait()
@@ -538,10 +731,27 @@ class CandaptorWindow(QMainWindow):
         except queue.Empty:
             pass
 
-        if not self.pause_check.isChecked():
-            if len(self.id_tracker):
-                self._refresh_id_ages()
-            self._update_load_label(time.time())
+        if paused:
+            return
+
+        if trace_rows:
+            self.trace_model.extend(trace_rows)
+            if self.auto_scroll_check.isChecked():
+                self.trace_table.scrollToBottom()
+
+        if dirty:
+            self.id_table.setUpdatesEnabled(False)
+            try:
+                for stats in dirty.values():
+                    self._sync_id_row(stats, now)
+            finally:
+                self.id_table.setUpdatesEnabled(True)
+
+        if len(self.id_tracker):
+            self._refresh_id_ages()
+        if drained:
+            self._update_count_label()
+        self._update_load_label(now)
 
     def _handle_reader_error(self, err):
         was_connected = self.connected
@@ -565,16 +775,9 @@ class CandaptorWindow(QMainWindow):
 
     # ---- Frames tables ---------------------------------------------------
 
-    def _add_frame_row(self, frame):
-        now = time.time()
-        self._add_trace_row(frame, now)
-        self._upsert_id_row(frame, now)
-        self.bus_load.add_frame(frame, now)
-        self._update_count_label()
-
-    def _add_trace_row(self, frame, now):
+    def _trace_row_values(self, frame, now):
         self.frame_count += 1
-        values = (
+        return (
             str(self.frame_count),
             format_wall_time(now),
             f"{frame['timestamp']:04X}" if "timestamp" in frame else "",
@@ -583,18 +786,6 @@ class CandaptorWindow(QMainWindow):
             str(len(frame["data"])),
             format_data_bytes(frame["data"]),
         )
-        row = self.trace_table.rowCount()
-        self.trace_table.insertRow(row)
-        for col, text in enumerate(values):
-            item = QTableWidgetItem(text)
-            item.setTextAlignment(
-                self._trace_aligns[col] | Qt.AlignmentFlag.AlignVCenter
-            )
-            self.trace_table.setItem(row, col, item)
-        if self.trace_table.rowCount() > MAX_ROWS:
-            self.trace_table.removeRow(0)
-        if self.auto_scroll_check.isChecked():
-            self.trace_table.scrollToBottom()
 
     def _id_iid(self, stats):
         prefix = "X" if stats.extended else "T"
@@ -619,6 +810,7 @@ class CandaptorWindow(QMainWindow):
         selected = self.id_table.currentRow() == row
         iid = self._id_iid(stats)
         kind = "Ext" if stats.extended else "Std"
+        period_s, std_s, hz = stats.window_stats(now)
         values = {
             "id": stats.id_str(),
             "type": kind,
@@ -626,10 +818,10 @@ class CandaptorWindow(QMainWindow):
             "data": format_data_bytes(stats.data),
             "chg": format_change_mask(changed, stats.dlc),
             "count": stats.count,
-            "period": format_period_ms(stats.period_ms),
+            "period": format_period_ms(None if period_s is None else period_s * 1000.0),
             "avg": format_period_ms(stats.avg_period_ms),
-            "std": format_std_ms(stats.std_period_ms),
-            "hz": format_hz(stats.hz),
+            "std": format_std_ms(None if std_s is None else std_s * 1000.0),
+            "hz": format_hz(hz),
             "age": format_age_ms(stats.age_s(now)),
             "last": format_wall_time(stats.last_seen),
         }
@@ -676,8 +868,7 @@ class CandaptorWindow(QMainWindow):
             if row >= inserted_at:
                 self._id_rows[iid] = row + 1
 
-    def _upsert_id_row(self, frame, now):
-        stats = self.id_tracker.update(frame, now)
+    def _sync_id_row(self, stats, now):
         iid = self._id_iid(stats)
         if iid in self._id_rows:
             self._paint_id_row(self._id_rows[iid], stats, now)
@@ -780,14 +971,15 @@ class CandaptorWindow(QMainWindow):
             return sum(1 for bit in stats.changed if bit)
         if col == "count":
             return stats.count
-        if col == "period":
-            return stats.period_s if stats.period_s is not None else -1.0
+        if col in ("period", "std", "hz"):
+            period_s, std_s, hz = stats.window_stats(now)
+            if col == "period":
+                return period_s if period_s is not None else -1.0
+            if col == "std":
+                return std_s if std_s is not None else -1.0
+            return hz if hz is not None else -1.0
         if col == "avg":
             return stats.ewma_s if stats.ewma_s is not None else -1.0
-        if col == "std":
-            return stats.std_period_ms if stats.std_period_ms is not None else -1.0
-        if col == "hz":
-            return stats.hz if stats.hz is not None else -1.0
         if col == "age":
             return stats.age_s(now)
         if col == "last":
@@ -830,12 +1022,14 @@ class CandaptorWindow(QMainWindow):
             data = item.data(DATA_ROLE) if item is not None else None
             if isinstance(data, (bytes, bytearray)):
                 return format_data_bytes(data)
+        if table is self.trace_table:
+            return self.trace_model.cell_text(row, col)
         item = table.item(row, col)
         return "" if item is None else item.text()
 
     def _table_row_text(self, table, row):
         parts = []
-        for col in range(table.columnCount()):
+        for col in range(table.model().columnCount()):
             parts.append(self._table_cell_text(table, row, col))
         return "\t".join(parts)
 
@@ -845,15 +1039,20 @@ class CandaptorWindow(QMainWindow):
             return
         QGuiApplication.clipboard().setText(text)
 
+    def _view_row_col(self, table):
+        index = table.currentIndex()
+        if not index.isValid():
+            return -1, -1
+        return index.row(), index.column()
+
     def _copy_current_cell(self, table):
-        row = table.currentRow()
-        col = table.currentColumn()
+        row, col = self._view_row_col(table)
         if row < 0 or col < 0:
             return
         self._copy_text(self._table_cell_text(table, row, col))
 
     def _copy_id_from_table(self, table):
-        row = table.currentRow()
+        row, _col = self._view_row_col(table)
         if row < 0:
             return
         if table is self.id_table:
@@ -862,7 +1061,7 @@ class CandaptorWindow(QMainWindow):
             self._copy_text(self._table_cell_text(table, row, TRACE_COL_ID))
 
     def _copy_data_from_table(self, table):
-        row = table.currentRow()
+        row, _col = self._view_row_col(table)
         if row < 0:
             return
         if table is self.id_table:
@@ -871,7 +1070,7 @@ class CandaptorWindow(QMainWindow):
             self._copy_text(self._table_cell_text(table, row, TRACE_COL_DATA))
 
     def _copy_row_from_table(self, table):
-        row = table.currentRow()
+        row, _col = self._view_row_col(table)
         if row < 0:
             return
         self._copy_text(self._table_row_text(table, row))
@@ -881,12 +1080,13 @@ class CandaptorWindow(QMainWindow):
         if not index.isValid():
             return False
         table.selectRow(index.row())
-        table.setCurrentCell(index.row(), index.column())
+        table.setCurrentIndex(index)
         return True
 
     def _table_copy_menu(self, table, pos, send_slot):
         if not self._select_table_index(table, pos):
             return
+        row, col = self._view_row_col(table)
         menu = QMenu(table)
         copy_cell = QAction("Copy", menu)
         copy_cell.setShortcut(QKeySequence.StandardKey.Copy)
@@ -898,7 +1098,7 @@ class CandaptorWindow(QMainWindow):
         copy_row = QAction("Copy row", menu)
         copy_row.triggered.connect(lambda: self._copy_row_from_table(table))
         send = QAction("Send this frame", menu)
-        send.triggered.connect(lambda: send_slot(table.currentRow(), table.currentColumn()))
+        send.triggered.connect(lambda: send_slot(row, col))
         menu.addAction(copy_cell)
         menu.addAction(copy_id)
         menu.addAction(copy_data)
@@ -913,15 +1113,19 @@ class CandaptorWindow(QMainWindow):
     def _trace_context_menu(self, pos):
         self._table_copy_menu(self.trace_table, pos, self._fill_send_from_trace)
 
+    def _on_trace_double_clicked(self, index):
+        if index.isValid():
+            self._fill_send_from_trace(index.row(), index.column())
+
     def _fill_send_from_trace(self, row, _col):
-        type_item = self.trace_table.item(row, 3)
-        id_item = self.trace_table.item(row, 4)
-        data_item = self.trace_table.item(row, 6)
-        if type_item is None or id_item is None or data_item is None:
+        kind = self.trace_model.cell_text(row, 3)
+        can_id = self.trace_model.cell_text(row, 4)
+        data = self.trace_model.cell_text(row, 6)
+        if not can_id:
             return
-        self.extended_check.setChecked(type_item.text() == "Ext")
-        self.id_edit.setText(id_item.text())
-        self.data_edit.setText(data_item.text())
+        self.extended_check.setChecked(kind == "Ext")
+        self.id_edit.setText(can_id)
+        self.data_edit.setText(data)
 
     def _fill_send_from_ids(self, row, _col):
         id_item = self.id_table.item(row, ID_COL["id"])
@@ -957,11 +1161,12 @@ class CandaptorWindow(QMainWindow):
         self.load_label.setStyleSheet(f"color: {color};")
 
     def clear_frames(self):
-        self.trace_table.setRowCount(0)
+        self.trace_model.clear()
         self.id_table.setRowCount(0)
         self._id_rows = {}
         self._id_visual = {}
         self.id_tracker.clear()
+        self.signals_panel.clear_graphs()
         self.frame_count = 0
         self._id_sort = ("id", False)
         self._id_style_row = -1

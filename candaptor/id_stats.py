@@ -11,6 +11,8 @@ import math
 import time
 from collections import deque
 
+HZ_WINDOW_S = 1.0
+
 
 def frame_key(can_id, extended):
     return (bool(extended), int(can_id))
@@ -149,6 +151,7 @@ def format_id_row(stats, now, changed=()):
     Each span is ``(start, end, changed)`` into the returned string, so the
     GUI can colour just the hex digits that changed.
     """
+    period_s, _std_s, hz = stats.window_stats(now)
     values = {
         "id": stats.id_str(),
         "type": "Ext" if stats.extended else "Std",
@@ -156,8 +159,8 @@ def format_id_row(stats, now, changed=()):
         "data": format_data_bytes(stats.data),
         "chg": format_change_mask(changed, stats.dlc),
         "count": str(stats.count),
-        "period": format_period_ms(stats.period_ms),
-        "hz": format_hz(stats.hz),
+        "period": format_period_ms(None if period_s is None else period_s * 1000.0),
+        "hz": format_hz(hz),
         "age": format_age_ms(stats.age_s(now)),
         "last": format_wall_time(stats.last_seen),
     }
@@ -214,6 +217,7 @@ class IdStats:
         "ewma_s",
         "ewmvar_s2",
         "period_samples",
+        "seen_at",
         "hw_ts",
         "changed",
         "changed_until",
@@ -230,6 +234,7 @@ class IdStats:
         self.ewma_s = None
         self.ewmvar_s2 = 0.0
         self.period_samples = 0
+        self.seen_at = deque((now,))
         self.hw_ts = hw_ts
         self.changed = ()
         self.changed_until = 0.0
@@ -256,12 +261,57 @@ class IdStats:
             return None
         return math.sqrt(max(self.ewmvar_s2, 0.0)) * 1000.0
 
-    @property
-    def hz(self):
-        period = self.ewma_s if self.ewma_s else self.period_s
-        if not period:
+    def window_stats(self, now=None):
+        """Rolling period (s), std (s), and Hz over the last ``HZ_WINDOW_S``.
+
+        Period and Hz come from the same arrival window so one late frame
+        does not yank either number. Std is the sample deviation of
+        intervals in that window once there are enough samples; otherwise
+        it falls back to the EWMA std. Pass wall-clock ``now`` so rates
+        decay while an ID is quiet.
+        """
+        if now is None:
+            now = self.last_seen
+        _trim_seen(self.seen_at, now)
+        times = self.seen_at
+        ewma_std = None
+        if self.period_samples >= 2:
+            ewma_std = math.sqrt(max(self.ewmvar_s2, 0.0))
+        fallback_period = self.ewma_s if self.ewma_s else self.period_s
+        if len(times) < 2:
+            return fallback_period, ewma_std, None
+        elapsed = now - times[0]
+        if elapsed <= 0:
+            return fallback_period, ewma_std, None
+        hz = (len(times) - 1) / min(HZ_WINDOW_S, elapsed)
+        period = 1.0 / hz
+        if len(times) < 6:
+            return period, ewma_std, hz
+        mean_iv = (times[-1] - times[0]) / (len(times) - 1)
+        var_acc = 0.0
+        prev = None
+        for t in times:
+            if prev is not None:
+                delta = t - prev - mean_iv
+                var_acc += delta * delta
+            prev = t
+        std = math.sqrt(var_acc / (len(times) - 2))
+        return period, std, hz
+
+    def rolling_period_ms(self, now=None):
+        period_s, _std, _hz = self.window_stats(now)
+        if period_s is None:
             return None
-        return 1.0 / period
+        return period_s * 1000.0
+
+    def rolling_std_ms(self, now=None):
+        _period, std_s, _hz = self.window_stats(now)
+        if std_s is None:
+            return None
+        return std_s * 1000.0
+
+    def hz(self, now=None):
+        return self.window_stats(now)[2]
 
     def age_s(self, now):
         return max(0.0, now - self.last_seen)
@@ -278,9 +328,10 @@ class IdTracker:
 
     STALE_AFTER_S = 2.0
     CHANGE_HOLD_S = 1.0
-    EWMA_ALPHA = 0.2
+    EWMA_ALPHA = 0.1
     LATE_FACTOR = 1.5
     MIN_SAMPLES_FOR_RATE = 5
+    HZ_WINDOW_S = HZ_WINDOW_S
 
     def __init__(self):
         self._ids = {}
@@ -311,6 +362,8 @@ class IdTracker:
         stats.count += 1
         stats.last_seen = now
         stats.hw_ts = hw_ts
+        stats.seen_at.append(now)
+        _trim_seen(stats.seen_at, now)
         return stats
 
     def display_changed(self, stats, now):
@@ -340,6 +393,12 @@ class IdTracker:
         if self.is_stale(stats, now):
             return False
         return stats.age_s(now) >= self.LATE_FACTOR * stats.ewma_s
+
+
+def _trim_seen(times, now, window_s=HZ_WINDOW_S):
+    cutoff = now - window_s
+    while times and times[0] < cutoff:
+        times.popleft()
 
 
 def _update_ewma(stats, period_s, alpha):

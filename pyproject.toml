@@ -21,6 +21,9 @@ classifiers = [
 dependencies = [
     "pyserial>=3.0",
     "pyside6-essentials>=6.6",
+    "cantools>=39.0",
+    "pyqtgraph>=0.13.0",
+    "numpy>=1.22.0",
 ]
 
 [project.optional-dependencies]
