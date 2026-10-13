@@ -31,6 +31,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --frozen
 
+      - name: Install system dependencies (Qt)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxkbcommon-x11-0 libdbus-1-3
+
       - name: Run tests
         run: uv run pytest -q
 
@@ -94,12 +99,20 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra bundle --frozen
 
+      - name: Install system dependencies (Linux Qt)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxkbcommon-x11-0 libdbus-1-3
+
       - name: Build standalone executable
         run: >
           uv run pyinstaller
           ${{ matrix.pyi_args }}
           --name candaptor-gui
           --collect-submodules candaptor
+          --collect-all pyqtgraph
+          --collect-all cantools
           --hidden-import PySide6.QtCore
           --hidden-import PySide6.QtGui
           --hidden-import PySide6.QtWidgets

@@ -3,21 +3,25 @@
 import os
 import tempfile
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
-
 from candaptor.dbc_engine import DBCEngine
-from candaptor.signals_panel import (
-    COL_G1,
-    COL_G2,
-    COL_G3,
-    COL_G4,
-    COL_NAME,
-    COL_UNIT,
-    COL_VALUE,
-    COL_WATCH,
-    SignalsPanel,
-)
+
+try:
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    from candaptor.signals_panel import (
+        COL_G1,
+        COL_G2,
+        COL_G3,
+        COL_G4,
+        COL_NAME,
+        COL_UNIT,
+        COL_VALUE,
+        COL_WATCH,
+        SignalsPanel,
+    )
+    HAS_QT = True
+except Exception:
+    HAS_QT = False
 
 SAMPLE_DBC = """VERSION ""
 
@@ -39,6 +43,8 @@ BO_ 512 VehicleSpeed: 4 Vector__XXX
 
 @pytest.fixture(scope="session")
 def qapp():
+    if not HAS_QT:
+        return None
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
     app = QApplication.instance()
     if app is None:
@@ -126,6 +132,7 @@ def test_dbc_engine_history(temp_dbc_file):
     assert len(engine.history[(256, "EngineRPM")]) == 0
 
 
+@pytest.mark.skipif(not HAS_QT, reason="PySide6 or system GUI libraries not available")
 def test_signals_panel_ui(qapp, temp_dbc_file):
     panel = SignalsPanel()
     assert panel.load_dbc_file(temp_dbc_file)
@@ -177,3 +184,58 @@ def test_signals_panel_ui(qapp, temp_dbc_file):
     # Clear graphs
     panel.clear_graphs()
     assert len(panel.dbc_engine.history.get((256, "EngineRPM"), [])) == 0
+
+
+@pytest.mark.skipif(not HAS_QT, reason="PySide6 or system GUI libraries not available")
+def test_signals_panel_cursor_and_space_pause(qapp, temp_dbc_file, monkeypatch):
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtCore import QEvent
+
+    panel = SignalsPanel()
+    panel.load_dbc_file(temp_dbc_file)
+    panel.show()
+
+    # Re-enable RPM on G1
+    rpm_item = panel.signal_items[(256, "EngineRPM")]
+    rpm_item.setCheckState(COL_G1, Qt.CheckState.Checked)
+
+    # Ingest points
+    frame = {"id": 256, "data": bytes([0x40, 0x1F, 0x82, 0x64, 0x00, 0x00, 0x00, 0x00]), "extended": False}
+    panel.process_frames([frame], now=10.0)
+
+    # Test cursor lines exist
+    assert len(panel.cursor_lines) == 4
+    for line in panel.cursor_lines:
+        assert not line.isVisible()
+
+    # Move cursor to T=0.0
+    panel._update_cursor_at(0.0)
+    assert panel.cursor_lines[0].isVisible()
+    assert panel.cursor_lines[0].value() == 0.0
+    assert "EngineRPM: 2000.00 rpm" in panel.readout_label.text()
+
+    # Test pinning cursor
+    panel.pinned_cursor_x = 0.0
+    panel._update_cursor_at(0.0)
+    assert "[PINNED]" in panel.readout_label.text()
+
+    # Unpin cursor
+    panel.pinned_cursor_x = None
+    panel._update_cursor_at(0.0)
+    assert "[PINNED]" not in panel.readout_label.text()
+
+    # Test Spacebar shortcut when focus is on panel (not in text field)
+    monkeypatch.setattr(QApplication, "focusWidget", lambda: panel)
+    panel.is_paused = False
+    event_space = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier, " ")
+    panel.keyPressEvent(event_space)
+    assert panel.is_paused
+
+    panel.keyPressEvent(event_space)
+    assert not panel.is_paused
+
+    # Test Spacebar shortcut when focused inside filter_edit (should NOT toggle pause)
+    monkeypatch.setattr(QApplication, "focusWidget", lambda: panel.filter_edit)
+    panel.keyPressEvent(event_space)
+    assert not panel.is_paused
+

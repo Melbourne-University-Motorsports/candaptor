@@ -4,25 +4,29 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QPointF, QSettings, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QKeyEvent, QPainter, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QRadioButton,
     QSizePolicy,
     QSplitter,
+    QTextEdit,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -103,7 +107,11 @@ class SignalsPanel(QWidget):
         self.plots: List[pg.PlotItem] = []
         # Mapping: (msg_id, sig_name, graph_idx) -> PlotDataItem
         self.curves: Dict[Tuple[int, str, int], pg.PlotDataItem] = {}
+        # Synchronized vertical cursor lines across all active plots
+        self.cursor_lines: List[pg.InfiniteLine] = []
+        self.pinned_cursor_x: Optional[float] = None
 
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._build_ui()
         self._restore_settings()
 
@@ -280,6 +288,7 @@ class SignalsPanel(QWidget):
         """Initialize up to 4 PlotItems in pyqtgraph."""
         self.glw.clear()
         self.plots.clear()
+        self.cursor_lines.clear()
 
         for i in range(4):
             plot = pg.PlotItem(title=f"Graph {i + 1}")
@@ -294,10 +303,24 @@ class SignalsPanel(QWidget):
             if i > 0 and self.plots:
                 plot.setXLink(self.plots[0])
 
+            # Visual vertical cursor line with timestamp badge
+            line = pg.InfiniteLine(
+                angle=90,
+                movable=False,
+                pen=pg.mkPen(color="#ffffff", width=1.5, style=Qt.PenStyle.DashLine),
+                label="{value:.2f}s",
+                labelOpts={"position": 0.95, "color": "#e0e0e0", "fill": "#1f2937", "movable": False},
+            )
+            line.setZValue(1000)
+            line.setVisible(False)
+            plot.addItem(line)
+            self.cursor_lines.append(line)
+
             self.plots.append(plot)
 
         if self.glw.scene():
             self.glw.scene().sigMouseMoved.connect(self._on_mouse_moved)
+            self.glw.scene().sigMouseClicked.connect(self._on_mouse_clicked)
 
         self._layout_plots()
 
@@ -335,6 +358,10 @@ class SignalsPanel(QWidget):
         """Clear all curve data points and reset time origin."""
         self.dbc_engine.clear_history()
         self.start_time = None
+        self.pinned_cursor_x = None
+        for line in self.cursor_lines:
+            line.setVisible(False)
+        self.readout_label.setText("Hover cursor over graphs to read values")
         for curve in self.curves.values():
             curve.setData([], [])
         if self.plots:
@@ -612,39 +639,82 @@ class SignalsPanel(QWidget):
 
     # ---- Mouse Crosshair Readout ------------------------------------------
 
-    def _on_mouse_moved(self, pos: QPointF) -> None:
-        target_idx = None
-        target_plot = None
+    # ---- Mouse Crosshair & Cursor Line ------------------------------------
+
+    def _find_plot_at(self, pos: QPointF) -> Optional[pg.PlotItem]:
         for idx in range(min(self.num_graphs, len(self.plots))):
             p = self.plots[idx]
             if p.sceneBoundingRect().contains(pos):
-                target_idx = idx
-                target_plot = p
-                break
+                return p
+        return None
 
+    def _on_mouse_clicked(self, evt: Any) -> None:
+        if evt.double():
+            # Double click unpins cursor
+            self.pinned_cursor_x = None
+            for line in self.cursor_lines:
+                line.setVisible(False)
+            self.readout_label.setText("Hover cursor over graphs to read values")
+        elif evt.button() == Qt.MouseButton.LeftButton:
+            pos = evt.scenePos()
+            target_plot = self._find_plot_at(pos)
+            if target_plot:
+                x_val = target_plot.vb.mapSceneToView(pos).x()
+                if self.pinned_cursor_x is not None and abs(self.pinned_cursor_x - x_val) < 0.2:
+                    self.pinned_cursor_x = None
+                else:
+                    self.pinned_cursor_x = x_val
+                self._update_cursor_at(x_val)
+
+    def _on_mouse_moved(self, pos: QPointF) -> None:
+        if self.pinned_cursor_x is not None:
+            return  # Kept pinned at clicked spike
+        target_plot = self._find_plot_at(pos)
         if target_plot is None:
             return
+        x_val = target_plot.vb.mapSceneToView(pos).x()
+        self._update_cursor_at(x_val)
 
-        mouse_point = target_plot.vb.mapSceneToView(pos)
-        x_val = mouse_point.x()
+    def _update_cursor_at(self, x_val: float) -> None:
+        for line in self.cursor_lines[:self.num_graphs]:
+            line.setValue(x_val)
+            line.setVisible(True)
 
-        readouts = [f"T: {x_val:6.2f}s"]
-        for (msg_id, sig_name, g_idx), curve in self.curves.items():
-            if g_idx == target_idx:
+        pin_str = "[PINNED] " if self.pinned_cursor_x is not None else ""
+        pause_str = "[PAUSED] " if self.is_paused else ""
+        readouts = [f"{pause_str}{pin_str}Cursor T: {x_val:6.2f}s"]
+
+        # Show values across all active graphs for comprehensive correlation
+        for g_idx in range(self.num_graphs):
+            curves_in_g = [(k, c) for k, c in self.curves.items() if k[2] == g_idx]
+            for (msg_id, sig_name, _), curve in curves_in_g:
                 buf = self.dbc_engine.history.get((msg_id, sig_name))
-                if buf:
+                if buf and self.start_time is not None:
                     pts = list(buf)
-                    if pts and self.start_time is not None:
+                    if pts:
                         times = [p[0] - self.start_time for p in pts]
                         idx = np.argmin(np.abs(np.array(times) - x_val))
                         val = pts[idx][1]
                         sig_info = self.dbc_engine.signal_infos.get((msg_id, sig_name))
                         unit = f" {sig_info.unit}" if sig_info and sig_info.unit else ""
-                        readouts.append(f"{sig_name}: {val:.2f}{unit}")
+                        readouts.append(f"[G{g_idx + 1}] {sig_name}: {val:.2f}{unit}")
 
-        new_text = " | ".join(readouts)
+        new_text = "  |  ".join(readouts)
         if self.readout_label.text() != new_text:
             self.readout_label.setText(new_text)
+
+    # ---- Keyboard Shortcuts -----------------------------------------------
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Space:
+            focused = QApplication.focusWidget()
+            if isinstance(focused, (QLineEdit, QTextEdit, QPlainTextEdit, QComboBox)) or self.filter_edit.hasFocus():
+                super().keyPressEvent(event)
+                return
+            self.pause_btn.toggle()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     # ---- Settings Persistence --------------------------------------------
 

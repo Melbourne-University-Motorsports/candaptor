@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QSizePolicy,
     QStyle,
@@ -43,6 +44,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -451,11 +453,11 @@ class CandaptorWindow(QMainWindow):
         header.addWidget(self.load_label)
         layout.addLayout(header)
 
-        tabs = QTabWidget()
-        tabs.addTab(self._build_trace_table(), "Trace")
-        tabs.addTab(self._build_id_table(), "IDs")
-        tabs.addTab(self.signals_panel, "Signals")
-        layout.addWidget(tabs, 1)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._build_trace_table(), "Trace")
+        self.tabs.addTab(self._build_id_table(), "IDs")
+        self.tabs.addTab(self.signals_panel, "Signals")
+        layout.addWidget(self.tabs, 1)
         return panel
 
     def _configure_table(self, table):
@@ -1243,6 +1245,25 @@ class CandaptorWindow(QMainWindow):
             self.status_label.setStyleSheet(
                 f"color: {STATUS_COLORS.get(color, color)};"
             )
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Space:
+            focused = QApplication.focusWidget()
+            if (
+                isinstance(focused, (QLineEdit, QTextEdit, QPlainTextEdit, QComboBox))
+                or self.id_edit.hasFocus()
+                or self.data_edit.hasFocus()
+                or self.signals_panel.filter_edit.hasFocus()
+            ):
+                super().keyPressEvent(event)
+                return
+            if hasattr(self, "tabs") and self.tabs.currentIndex() == 2:
+                self.signals_panel.pause_btn.toggle()
+            else:
+                self.pause_check.toggle()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def closeEvent(self, event):
         self.disconnect()

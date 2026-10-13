@@ -481,9 +481,13 @@ def test_enqueue_latest_drops_oldest_when_full():
 
 def test_trace_model_wraps_without_growing_past_max():
     import os
+    import pytest
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication
-    from candaptor.gui import TraceModel
+    try:
+        from PySide6.QtWidgets import QApplication
+        from candaptor.gui import TraceModel
+    except Exception:
+        pytest.skip("PySide6 or system GUI libraries not available")
 
     app = QApplication.instance() or QApplication([])
     model = TraceModel(max_rows=3)
